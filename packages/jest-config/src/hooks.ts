@@ -1,6 +1,71 @@
+import { appendFileSync, mkdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { renderHook as renderHookRTL, RenderHookOptions, waitFor } from '@testing-library/react';
 import { queries, Queries } from '@testing-library/dom';
 import type { BooleanValues, RenderHookResultExt } from '../types';
+
+type TimingTraceState = {
+  type: string;
+  loaded?: boolean;
+  error?: {
+    name: string;
+    message: string;
+  };
+};
+
+const timingTraceEnabled = Boolean(process.env.FEATURE_STORE_TIMING_TRACE_DIR);
+
+const isTimingTraceResult = (result: unknown): result is { loaded?: unknown; error?: unknown } =>
+  typeof result === 'object' && result !== null;
+
+const getTimingTraceState = (result: unknown): TimingTraceState => {
+  if (!isTimingTraceResult(result)) {
+    return { type: typeof result };
+  }
+
+  const { loaded, error } = result;
+
+  return {
+    type: Array.isArray(result) ? 'array' : 'object',
+    ...(typeof loaded === 'boolean' ? { loaded } : {}),
+    ...(error instanceof Error ? { error: { name: error.name, message: error.message } } : {}),
+  };
+};
+
+const writeTimingTrace = (
+  expectedUpdateCount: number,
+  updateCount: number,
+  renderHistory: TimingTraceState[],
+  currentResult: unknown,
+  outcome: 'resolved' | 'timed-out',
+) => {
+  if (!timingTraceEnabled) {
+    return;
+  }
+
+  try {
+    const traceDirectory = process.env.FEATURE_STORE_TIMING_TRACE_DIR;
+    if (!traceDirectory) {
+      return;
+    }
+    const { currentTestName, testPath } = expect.getState();
+    mkdirSync(traceDirectory, { recursive: true });
+    appendFileSync(
+      join(traceDirectory, `hook-update-${process.pid}.jsonl`),
+      `${JSON.stringify({
+        testPath,
+        currentTestName,
+        outcome,
+        expectedUpdateCount,
+        updateCount,
+        renderHistory,
+        currentResult: getTimingTraceState(currentResult),
+      })}\n`,
+    );
+  } catch {
+    // Diagnostics must never alter a test's result.
+  }
+};
 
 /**
  * Wrapper on top of RTL `renderHook` returning a result that implements the `RenderHookResultExt` interface.
@@ -29,11 +94,15 @@ export const renderHook = <
   let updateCount = 0;
   let prevResult: Result;
   let currentResult: Result;
+  const renderHistory: TimingTraceState[] = [];
 
   const renderResult = renderHookRTL((props) => {
     updateCount++;
     prevResult = currentResult;
     currentResult = render(props);
+    if (timingTraceEnabled) {
+      renderHistory.push(getTimingTraceState(currentResult));
+    }
     return currentResult;
   }, options);
 
@@ -49,8 +118,22 @@ export const renderHook = <
       try {
         await waitFor(() => expect(updateCount).toBeGreaterThan(expected), currentOptions);
       } catch {
+        writeTimingTrace(
+          expected,
+          updateCount,
+          renderHistory,
+          renderResult.result.current,
+          'timed-out',
+        );
         throw new Error('waitForNextUpdate timed out');
       }
+      writeTimingTrace(
+        expected,
+        updateCount,
+        renderHistory,
+        renderResult.result.current,
+        'resolved',
+      );
     },
   };
 
