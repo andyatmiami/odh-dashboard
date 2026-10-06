@@ -270,3 +270,23 @@ Then run the affected package suites and the workspace suite:
 pnpm --filter @odh-dashboard/feature-store run test-unit
 pnpm run test-unit
 ```
+
+For repeated uncached workspace runs with timing traces, use:
+
+```bash
+scripts/reproduce-feature-store-timing.sh 100
+```
+
+The script stops at the first Feature Store test failure by default. To run all
+runnable workspace test tasks within every attempt and always complete the
+requested number of attempts, use:
+
+```bash
+scripts/reproduce-feature-store-timing.sh 100 --continue-on-failure
+```
+
+Each run produces a log, trace directory, failure list, and JSON summary. The
+`metadata/runs.tsv` file in the generated log directory provides one compact
+row per attempt with its status, failure count, and Turbo continuation mode.
+When a run has failures, its terminal summary also lists the failed suites as
+indented bullets.
